@@ -1,14 +1,16 @@
 const axios = require('axios');
 const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
-// [최후의 수단]
-// 최신 모델(1.5)이 404가 뜨므로, 가장 안정적인 구형 표준 모델(gemini-pro)의 정식 버전(v1)을 사용합니다.
-// 이 URL은 전 세계 모든 API Key에서 작동해야 정상입니다.
+// [최종 해결책]
+// 1.5-flash 모델이 404 에러가 나므로, 
+// 가장 호환성이 높은 'gemini-pro' (v1 정식 버전)를 강제로 사용합니다.
 async function callGemini(text) {
     const apiKey = process.env.GEMINI_API_KEY;
     
-    // ▼ 핵심 수정: v1beta (베타) -> v1 (정식), 모델명 gemini-pro 고정
+    // 🚨 중요: 주소가 'v1beta'가 아니라 'v1'입니다. 모델명은 'gemini-pro'입니다.
+    // 이 조합은 전 세계 모든 API 키에서 작동하는 가장 기초적인 조합입니다.
     const apiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${apiKey}`;
 
     const payload = {
@@ -28,28 +30,34 @@ async function callGemini(text) {
             headers: { 'Content-Type': 'application/json' }
         });
         
-        // 응답 경로가 v1/v1beta 동일함
-        return response.data.candidates[0].content.parts[0].text;
+        if (response.data && response.data.candidates && response.data.candidates.length > 0) {
+            return response.data.candidates[0].content.parts[0].text;
+        } else {
+            return "AI 분석 결과 없음 (내용이 차단되었거나 비어있음)";
+        }
+
     } catch (error) {
-        // 만약 여기서도 에러가 나면 API 키 자체가 'Generative AI' 기능을 켜지 않은 것입니다.
+        // 에러 로그를 상세히 출력
         const errMsg = error.response 
-            ? `API 에러: ${error.response.status} ${JSON.stringify(error.response.data)}` 
-            : `통신 에러: ${error.message}`;
+            ? `API 응답 에러: ${error.response.status} ${JSON.stringify(error.response.data)}` 
+            : `통신 요청 에러: ${error.message}`;
         
         console.error(`🚨 ${errMsg}`);
         
-        // 빈 내용이라도 리턴해서 HTML은 깨지지 않게 방어
-        return "AI 요약 서비스를 일시적으로 사용할 수 없습니다.";
+        // 404가 또 뜨면, API 키 자체가 문제이거나 프로젝트 설정 문제입니다.
+        // 하지만 HTML은 깨지지 않게 텍스트를 반환합니다.
+        return "AI 분석 서비스 일시적 장애 (로그 확인 필요)";
     }
 }
 
 async function main() {
-    console.log("🚀 RSS 데이터 수집 및 분석 시작 (Stable v1 Mode)...");
+    console.log("🚀 RSS 데이터 수집 및 분석 시작 (v1/gemini-pro Mode)...");
     const articles = [];
 
     try {
         // CNN Health RSS
         const rssUrl = "http://rss.cnn.com/rss/cnn_health.rss"; 
+        
         const response = await axios.get(rssUrl, { timeout: 15000 });
         const xml = response.data;
 
@@ -75,6 +83,7 @@ async function main() {
         console.error("🔥 전체 프로세스 에러:", e.message);
     }
 
+    // HTML 생성
     const html = `
     <!DOCTYPE html>
     <html lang="ko">
@@ -85,6 +94,7 @@ async function main() {
         <style>
             body { font-family: 'Apple SD Gothic Neo', sans-serif; padding: 20px; background: #f0f2f5; color: #333; }
             .container { max-width: 600px; margin: 0 auto; }
+            h1 { text-align: center; color: #2c3e50; }
             .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 12px; border-left: 5px solid #2980b9; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
             h2 a { color: #2c3e50; text-decoration: none; font-size: 1.1rem; }
             .analysis { background: #ecf0f1; padding: 15px; border-radius: 8px; margin-top: 15px; white-space: pre-wrap; line-height: 1.6; font-size: 0.95rem; }
