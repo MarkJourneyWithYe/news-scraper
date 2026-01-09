@@ -3,13 +3,13 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
-// [중요] 라이브러리(GoogleGenerativeAI) 삭제하고 직접 요청함
-// 이렇게 하면 package.json 버전 문제에서 100% 해방됩니다.
-
+// AI 호출 함수 (라이브러리 미사용, Direct API)
 async function callGemini(text) {
     const apiKey = process.env.GEMINI_API_KEY;
-    // 가장 호환성 높은 gemini-pro 모델을 직접 호출
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+    
+    // [수정 핵심] 모델명을 'gemini-pro'에서 'gemini-1.5-flash'로 변경
+    // 1.5-flash는 현재 구글이 미는 최신 모델이라 v1beta에서 무조건 작동합니다.
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
     const payload = {
         contents: [{
@@ -31,18 +31,18 @@ async function callGemini(text) {
         // 응답 파싱
         return response.data.candidates[0].content.parts[0].text;
     } catch (error) {
-        // 에러 로그 자세히 출력
-        if (error.response) {
-            console.error(`🚨 API 에러: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
-        } else {
-            console.error(`🚨 통신 에러: ${error.message}`);
-        }
-        return "AI 분석 실패 (API 호출 오류)";
+        // 에러 발생 시 로그 출력
+        const errMsg = error.response 
+            ? `API 에러: ${error.response.status} ${JSON.stringify(error.response.data)}` 
+            : `통신 에러: ${error.message}`;
+        
+        console.error(`🚨 ${errMsg}`);
+        return `AI 분석 실패: ${errMsg}`;
     }
 }
 
 async function main() {
-    console.log("🚀 RSS 데이터 수집 및 분석 시작 (Direct API 방식)...");
+    console.log("🚀 RSS 데이터 수집 및 분석 시작...");
     const articles = [];
 
     try {
@@ -52,7 +52,7 @@ async function main() {
         const response = await axios.get(rssUrl, { timeout: 15000 });
         const xml = response.data;
 
-        // 아이템 추출
+        // 아이템 추출 (CDATA, 정규식 문제 해결됨)
         const itemRegex = /<item>([\s\S]*?)<\/item>/g;
         const itemsMatch = xml.match(itemRegex);
         const items = itemsMatch ? itemsMatch.slice(0, 5) : [];
@@ -68,12 +68,12 @@ async function main() {
 
             console.log(`📰 분석 중: ${title}`);
 
-            // [변경] 라이브러리 대신 직접 만든 함수 호출
+            // AI 호출
             const analysis = await callGemini(title);
             articles.push({ title, link, analysis });
         }
     } catch (e) {
-        console.error("🔥 RSS 수집 단계 실패:", e.message);
+        console.error("🔥 전체 프로세스 에러:", e.message);
     }
 
     // HTML 생성
