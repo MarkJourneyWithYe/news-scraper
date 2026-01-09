@@ -1,19 +1,16 @@
 {
   "name": "news-scraper",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "AI Health News Scraper",
+  "main": "scraper.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node scraper.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
-    "axios": "^1.13.2",
-    "cheerio": "^1.1.2",
-    "dotenv": "^17.2.3"
-  }
+    "@google/generative-ai": "^0.21.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0"
+  },
+  "author": "",
+  "license": "ISC"
 }
