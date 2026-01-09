@@ -2,89 +2,103 @@ const axios = require('axios');
 const fs = require('fs');
 require('dotenv').config();
 
-// [무조건 성공시키는 함수] 
-// 10초 쉬는 걸로는 부족해서 30초로 늘리고, 실패하면 될 때까지 다시 합니다.
+// [지연 함수]
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function callGemini(text) {
+// [1] 구글한테 "너 무슨 모델 가지고 있어?" 하고 물어보는 함수
+async function getWorkingModel(apiKey) {
+    try {
+        // v1beta 목록 조회
+        const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
+        const response = await axios.get(listUrl);
+        const models = response.data.models;
+
+        // 'generateContent' 기능이 있는 모델만 추림
+        const validModels = models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
+
+        if (validModels.length === 0) throw new Error("사용 가능한 모델이 없습니다.");
+
+        // 우선순위: flash(빠름) -> pro(안정적) -> 아무거나
+        let bestModel = validModels.find(m => m.name.includes('flash')) || 
+                        validModels.find(m => m.name.includes('pro')) || 
+                        validModels[0];
+
+        console.log(`🤖 구글이 제공한 모델 사용: ${bestModel.name}`);
+        return bestModel.name; // 예: models/gemini-2.0-flash-exp (이름을 그대로 리턴)
+    } catch (e) {
+        console.error("🚨 모델 목록 조회 실패. 기본값 'models/gemini-pro' 시도합니다.");
+        return 'models/gemini-pro';
+    }
+}
+
+// [2] AI 요약 함수 (429 에러 시 무한 재시도)
+async function callGemini(text, modelName) {
     const apiKey = process.env.GEMINI_API_KEY;
-    // [수정] 2.5 버전은 제한이 심합니다. 1.5-flash로 강제 고정합니다.
-    const modelName = 'models/gemini-1.5-flash';
+    // [중요] 제가 이름을 정하지 않고, 위에서 받아온 modelName을 그대로 씁니다.
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`;
 
     const payload = {
-        contents: [{ 
-            parts: [{ 
-                text: `
-                역할: 전문 의학 기자.
-                임무: 아래 최신 의학 뉴스 제목을 보고, 한국어로 '핵심 건강 정보'를 3줄로 알기 쉽게 요약해 주세요.
-                뉴스 제목: "${text}"
-                ` 
-            }] 
-        }]
+        contents: [{ parts: [{ text: `뉴스 제목: "${text}" \n위 의학 뉴스 제목을 보고 한국어로 핵심 건강 정보를 3줄로 요약해 주세요.` }] }]
     };
 
     let attempts = 0;
-    const maxAttempts = 5; // 최대 5번까지 재시도
-
-    while (attempts < maxAttempts) {
+    // 최대 10번까지 재시도 (끈질기게 붙음)
+    while (attempts < 10) {
         try {
             const response = await axios.post(apiUrl, payload, { headers: { 'Content-Type': 'application/json' } });
             return response.data.candidates[0].content.parts[0].text;
         } catch (error) {
+            // 429 (속도 제한) -> 30초 쉬고 재시도
             if (error.response && error.response.status === 429) {
                 attempts++;
-                console.error(`🚨 구글 API 속도 제한 (429) 발생!`);
-                console.log(`⏳ [재시도 ${attempts}/${maxAttempts}] 30초 푹 쉬고 다시 뚫어봅니다...`);
-                
-                // 30초 대기 후 루프 처음으로 돌아가서 다시 요청
+                console.log(`⏳ [속도 제한 429] 30초 대기 후 재시도합니다... (${attempts}/10)`);
                 await delay(30000); 
                 continue;
             }
             
-            // 429 말고 다른 에러면 그냥 포기
-            console.error(`🚨 알 수 없는 에러: ${error.message}`);
-            return "AI 분석 실패 (오류)";
+            // 404가 뜨면 모델이 안 맞는 거니, gemini-pro로 바꿔서 한 번 더 시도
+            if (error.response && error.response.status === 404 && !modelName.includes('pro')) {
+                console.log("🚨 모델 불일치(404). 'gemini-pro'로 변경하여 재시도...");
+                return callGemini(text, 'models/gemini-pro');
+            }
+
+            console.error(`🚨 분석 실패 (${error.response ? error.response.status : error.message})`);
+            return "AI 분석 오류";
         }
     }
-    return "속도 제한으로 5번 재시도했으나 실패함.";
+    return "AI 응답 시간 초과";
 }
 
 async function main() {
-    console.log("🚀 최신 헬스 뉴스 수집 시작 (ScienceDaily + Retry Mode)...");
+    console.log("🚀 뉴스 수집 시작...");
     const articles = [];
+    const apiKey = process.env.GEMINI_API_KEY;
 
     try {
-        // ScienceDaily Health RSS (최신)
-        const rssUrl = "https://www.sciencedaily.com/rss/health_medicine.xml"; 
-        const response = await axios.get(rssUrl, { 
-            timeout: 15000,
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
+        // [핵심] 사용 가능한 모델 이름을 먼저 받아옵니다.
+        const modelName = await getWorkingModel(apiKey);
         
-        // 기사 5개 추출
+        // ScienceDaily Health RSS
+        const rssUrl = "https://www.sciencedaily.com/rss/health_medicine.xml"; 
+        const response = await axios.get(rssUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 15000 });
+        
         const items = (response.data.match(/<item>[\s\S]*?<\/item>/g) || []).slice(0, 5);
 
-        if (items.length === 0) console.log("⚠️ 기사를 못 찾았습니다.");
-
         for (const itemXml of items) {
-            let titleMatch = itemXml.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
-            let linkMatch = itemXml.match(/<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/);
+            let title = itemXml.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)[1].trim();
+            let link = itemXml.match(/<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/)[1].trim();
 
-            const title = titleMatch ? titleMatch[1].trim() : "제목 없음";
-            const link = linkMatch ? linkMatch[1].trim() : "#";
+            console.log(`📰 분석 중: ${title}`);
 
-            console.log(`📰 분석 시도: ${title}`);
-
-            // AI 요약 (재시도 로직 포함된 함수 호출)
-            const analysis = await callGemini(title);
+            // 받아온 정확한 모델 이름으로 호출
+            const analysis = await callGemini(title, modelName);
             articles.push({ title, link, analysis });
 
-            // 성공했어도 다음 타자를 위해 5초 예의상 대기
+            // 성공 후에도 5초 휴식 (안전빵)
             await delay(5000); 
         }
     } catch (e) {
-        console.error("🔥 전체 에러:", e.message);
+        console.error("🔥 에러:", e.message);
     }
 
     // HTML 생성
@@ -96,36 +110,28 @@ async function main() {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>오늘의 AI 헬스 뉴스</title>
         <style>
-            body { font-family: 'Apple SD Gothic Neo', sans-serif; padding: 15px; background: #f0f2f5; margin: 0; }
-            .container { max-width: 600px; margin: 0 auto; }
-            .header { text-align: center; margin-bottom: 20px; padding: 10px; }
-            h1 { color: #2c3e50; font-size: 1.5rem; margin: 0; }
-            .date { color: #7f8c8d; font-size: 0.9rem; margin-top: 5px; }
-            .card { background: white; padding: 15px; margin-bottom: 15px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 5px solid #3498db; }
-            h2 { font-size: 1.1rem; margin: 0 0 10px 0; line-height: 1.4; }
-            h2 a { color: #2c3e50; text-decoration: none; }
-            .analysis { background: #f8f9fa; padding: 12px; border-radius: 8px; color: #444; font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap; }
+            body { font-family: sans-serif; padding: 15px; background: #f4f7f6; }
+            .card { background: white; padding: 15px; margin-bottom: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+            h2 { font-size: 1.1rem; margin-bottom: 10px; }
+            h2 a { color: #333; text-decoration: none; }
+            .analysis { background: #e0f7fa; padding: 10px; border-radius: 5px; font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap; }
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="header">
-                <h1>🏥 오늘의 최신 의학 뉴스</h1>
-                <p class="date">업데이트: ${new Date().toLocaleString('ko-KR')}</p>
+        <h1 style="text-align:center; color:#00796b">🏥 오늘의 AI 헬스 뉴스</h1>
+        <p style="text-align:center; color:gray">${new Date().toLocaleString('ko-KR')}</p>
+        ${articles.map(a => `
+            <div class="card">
+                <h2><a href="${a.link}" target="_blank">${a.title}</a></h2>
+                <div class="analysis">${a.analysis}</div>
             </div>
-            ${articles.length > 0 ? articles.map(a => `
-                <div class="card">
-                    <h2><a href="${a.link}" target="_blank">${a.title}</a></h2>
-                    <div class="analysis">${a.analysis}</div>
-                </div>
-            `).join('') : '<div class="card" style="text-align:center">AI 분석 중입니다...</div>'}
-        </div>
+        `).join('')}
     </body>
     </html>`;
 
     if (!fs.existsSync('public')) fs.mkdirSync('public');
     fs.writeFileSync('public/index.html', html);
-    console.log(`✅ 최종 완료! ${articles.length}개 처리.`);
+    console.log(`✅ 완료!`);
 }
 
 main();
