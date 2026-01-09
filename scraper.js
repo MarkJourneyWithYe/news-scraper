@@ -6,41 +6,36 @@ require('dotenv').config();
 
 // AI 설정
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+// [수정 포인트] 모델 이름을 'gemini-1.5-flash'에서 'gemini-pro'로 변경
+// gemini-pro는 가장 안정적이고 널리 쓰이는 모델이라 404 에러가 안 날 겁니다.
+const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
 async function main() {
     console.log("🚀 RSS 데이터 수집 및 분석 시작...");
     const articles = [];
 
     try {
-        // [변경 1] 헬스케어 전문가 프롬프트에 맞는 'Science/Health' 관련 RSS로 변경 권장
-        // 코리아타임즈는 'Nation'이나 'Opinion'이 섞여 있어, 차라리 'Science Daily'나 해외 헬스 RSS가 낫지만
-        // 일단 코리아타임즈 'Opinion' (그나마 칼럼이 많음) 또는 Tech/Science가 있다면 교체해야 합니다.
-        // 여기서는 예시로 CNN Health (영어지만 번역 시킴) 또는 코리아타임즈 유지하되 로직 강화.
-        
-        // 테스트를 위해 안정적인 CNN Health RSS를 추천합니다. (한국어 번역 요청 포함)
+        // CNN Health RSS (헬스 관련이라 AI가 할 말이 많음)
         const rssUrl = "http://rss.cnn.com/rss/cnn_health.rss"; 
         
-        // 기존 코리아타임즈를 꼭 써야 한다면 아래 주석 해제 (단, 헬스 관련 글이 적을 수 있음)
-        // const rssUrl = "https://www.koreatimes.co.kr/www/rss/world.xml";
-
         const response = await axios.get(rssUrl, { timeout: 15000 });
         const xml = response.data;
 
-        // [변경 2] 정규식 대폭 강화 (CDATA 유무 상관없이 추출)
-        // <item> 태그 추출
+        // <item> 태그 추출 (정규식 강화 버전)
         const itemRegex = /<item>([\s\S]*?)<\/item>/g;
         const itemsMatch = xml.match(itemRegex);
         
         if (!itemsMatch) {
-            throw new Error("RSS에서 아이템을 찾을 수 없습니다. XML 구조를 확인하세요.");
+            console.log("⚠️ RSS 데이터 구조가 예상과 다릅니다. 원본 확인 필요.");
+            // itemsMatch가 null일 경우 빈 배열 처리하여 멈추지 않게 함
         }
-
-        const items = itemsMatch.slice(0, 5); // 5개만 처리
+        
+        // 아이템이 있으면 5개, 없으면 빈 배열
+        const items = itemsMatch ? itemsMatch.slice(0, 5) : [];
 
         for (const itemXml of items) {
-            // 제목 추출 (CDATA 있든 없든 다 잡는 정규식)
-            // <title>...글자...</title> 내부를 캡처
+            // 제목과 링크 추출
             let titleMatch = itemXml.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
             let linkMatch = itemXml.match(/<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/);
 
@@ -50,11 +45,11 @@ async function main() {
             console.log(`📰 분석 중: ${title}`);
 
             try {
-                // [변경 3] 프롬프트 강화 (뉴스 -> 한국어 3줄 요약 + 헬스 인사이트)
+                // 프롬프트: 영어 뉴스를 한국어로 번역 및 요약
                 const prompt = `
-                역할: 당신은 숙련된 헬스케어 저널리스트입니다.
-                임무: 아래 뉴스 제목을 보고, 이것이 건강/의학/과학과 관련이 있다면 핵심 건강 상식을 한국어 3줄로 요약해 주세요.
-                만약 정치/전쟁 등 건강과 전혀 무관한 뉴스라면 "건강 관련 내용이 아닌 일반 시사 뉴스입니다."라고만 한 줄로 답하세요.
+                역할: 당신은 헬스케어 전문 기자입니다.
+                임무: 아래 영어 뉴스 제목을 보고, 내용을 유추하여 한국어로 '핵심 건강 정보'를 3줄 요약해 주세요.
+                반드시 한국어로 답변해야 합니다.
                 
                 뉴스 제목: ${title}
                 `;
@@ -62,9 +57,9 @@ async function main() {
                 const result = await model.generateContent(prompt);
                 const analysis = result.response.text();
 
-                // 분석 결과가 유의미한 경우에만 푸시
                 articles.push({ title, link, analysis });
             } catch (err) {
+                // 여기서 에러가 나도 다음 기사로 넘어가도록 처리
                 console.error(`❌ AI 분석 실패 (${title}):`, err.message);
             }
         }
@@ -85,8 +80,7 @@ async function main() {
             .container { max-width: 600px; margin: 0 auto; }
             h1 { text-align: center; color: #2c3e50; margin-bottom: 5px; }
             .date { text-align: center; color: #7f8c8d; font-size: 0.9rem; margin-bottom: 30px; }
-            .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); border-left: 5px solid #00b894; transition: transform 0.2s; }
-            .card:hover { transform: translateY(-2px); }
+            .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); border-left: 5px solid #00b894; }
             h2 { font-size: 1.15rem; margin-top: 0; }
             h2 a { color: #2d3436; text-decoration: none; }
             h2 a:hover { color: #00b894; }
@@ -103,7 +97,7 @@ async function main() {
                     <h2><a href="${a.link}" target="_blank">${a.title}</a></h2>
                     <div class="analysis">${a.analysis}</div>
                 </div>
-            `).join('') : '<div class="card empty">수집된 헬스 뉴스가 없습니다.<br>잠시 후 다시 시도해주세요.</div>'}
+            `).join('') : '<div class="card empty">수집된 뉴스가 없거나 AI 분석 중 오류가 발생했습니다.<br>로그를 확인해 주세요.</div>'}
         </div>
     </body>
     </html>`;
