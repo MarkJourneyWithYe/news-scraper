@@ -1,37 +1,15 @@
 const axios = require('axios');
 const fs = require('fs');
-const path = require('path');
 require('dotenv').config();
 
-// [1] 구글 API 과부하 방지를 위한 10초 대기 함수
+// [무조건 성공시키는 함수] 
+// 10초 쉬는 걸로는 부족해서 30초로 늘리고, 실패하면 될 때까지 다시 합니다.
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// [2] 현재 사용 가능한 AI 모델 자동 탐색 (404 에러 방지)
-async function getAvailableModel(apiKey) {
-    try {
-        const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-        const response = await axios.get(listUrl);
-        const models = response.data.models;
-
-        // 'generateContent' 기능을 지원하는 모델 중 'flash'가 들어간 최신 모델 우선 선택
-        const activeModel = models.find(m => 
-            m.supportedGenerationMethods.includes('generateContent') && 
-            m.name.includes('flash')
-        ) || models.find(m => m.supportedGenerationMethods.includes('generateContent'));
-
-        if (!activeModel) return 'models/gemini-1.5-flash'; // 없으면 기본값
-        
-        console.log(`🤖 AI 모델 설정 완료: ${activeModel.name}`);
-        return activeModel.name;
-    } catch (e) {
-        console.error("🚨 모델 목록 조회 실패, 기본값 사용");
-        return 'models/gemini-1.5-flash';
-    }
-}
-
-// [3] AI에게 요약 요청 (429 에러 처리 포함)
-async function callGemini(text, modelName) {
+async function callGemini(text) {
     const apiKey = process.env.GEMINI_API_KEY;
+    // [수정] 2.5 버전은 제한이 심합니다. 1.5-flash로 강제 고정합니다.
+    const modelName = 'models/gemini-1.5-flash';
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`;
 
     const payload = {
@@ -46,66 +24,70 @@ async function callGemini(text, modelName) {
         }]
     };
 
-    try {
-        const response = await axios.post(apiUrl, payload, { headers: { 'Content-Type': 'application/json' } });
-        return response.data.candidates[0].content.parts[0].text;
-    } catch (error) {
-        if (error.response && error.response.status === 429) {
-             console.error("🚨 구글 API 속도 제한 (429) - 잠시 건너뜁니다.");
-             return "속도 제한으로 분석 보류 (다음 업데이트 때 반영됩니다)";
+    let attempts = 0;
+    const maxAttempts = 5; // 최대 5번까지 재시도
+
+    while (attempts < maxAttempts) {
+        try {
+            const response = await axios.post(apiUrl, payload, { headers: { 'Content-Type': 'application/json' } });
+            return response.data.candidates[0].content.parts[0].text;
+        } catch (error) {
+            if (error.response && error.response.status === 429) {
+                attempts++;
+                console.error(`🚨 구글 API 속도 제한 (429) 발생!`);
+                console.log(`⏳ [재시도 ${attempts}/${maxAttempts}] 30초 푹 쉬고 다시 뚫어봅니다...`);
+                
+                // 30초 대기 후 루프 처음으로 돌아가서 다시 요청
+                await delay(30000); 
+                continue;
+            }
+            
+            // 429 말고 다른 에러면 그냥 포기
+            console.error(`🚨 알 수 없는 에러: ${error.message}`);
+            return "AI 분석 실패 (오류)";
         }
-        return "AI 분석 실패 (일시적 오류)";
     }
+    return "속도 제한으로 5번 재시도했으나 실패함.";
 }
 
 async function main() {
-    console.log("🚀 최신 헬스 뉴스 수집 시작 (ScienceDaily Source)...");
+    console.log("🚀 최신 헬스 뉴스 수집 시작 (ScienceDaily + Retry Mode)...");
     const articles = [];
-    const apiKey = process.env.GEMINI_API_KEY;
 
     try {
-        // 1. 모델명 확인
-        const modelName = await getAvailableModel(apiKey);
-        
-        // 2. RSS 데이터 가져오기 (ScienceDaily Health - 실시간 최신)
-        // User-Agent 헤더를 넣어야 봇 차단을 피할 수 있음
+        // ScienceDaily Health RSS (최신)
         const rssUrl = "https://www.sciencedaily.com/rss/health_medicine.xml"; 
         const response = await axios.get(rssUrl, { 
             timeout: 15000,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+            headers: { 'User-Agent': 'Mozilla/5.0' }
         });
         
-        const xml = response.data;
-        
-        // 3. XML 파싱 (최신 기사 5개)
-        const itemRegex = /<item>[\s\S]*?<\/item>/g;
-        const items = (xml.match(itemRegex) || []).slice(0, 5);
+        // 기사 5개 추출
+        const items = (response.data.match(/<item>[\s\S]*?<\/item>/g) || []).slice(0, 5);
 
-        if (items.length === 0) console.log("⚠️ RSS 구조가 변경되었거나 기사가 없습니다.");
+        if (items.length === 0) console.log("⚠️ 기사를 못 찾았습니다.");
 
         for (const itemXml of items) {
-            // 제목과 링크 정규식 추출
             let titleMatch = itemXml.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
             let linkMatch = itemXml.match(/<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/);
 
             const title = titleMatch ? titleMatch[1].trim() : "제목 없음";
             const link = linkMatch ? linkMatch[1].trim() : "#";
 
-            console.log(`📰 분석 중: ${title}`);
+            console.log(`📰 분석 시도: ${title}`);
 
-            // 4. AI 요약 실행
-            const analysis = await callGemini(title, modelName);
+            // AI 요약 (재시도 로직 포함된 함수 호출)
+            const analysis = await callGemini(title);
             articles.push({ title, link, analysis });
 
-            // [중요] 429 에러 방지를 위한 10초 휴식
-            console.log("⏳ 10초 대기 중... (구글 API 보호)");
-            await delay(10000); 
+            // 성공했어도 다음 타자를 위해 5초 예의상 대기
+            await delay(5000); 
         }
     } catch (e) {
-        console.error("🔥 전체 에러 발생:", e.message);
+        console.error("🔥 전체 에러:", e.message);
     }
 
-    // HTML 생성 (모바일 친화적 디자인)
+    // HTML 생성
     const html = `
     <!DOCTYPE html>
     <html lang="ko">
@@ -136,14 +118,14 @@ async function main() {
                     <h2><a href="${a.link}" target="_blank">${a.title}</a></h2>
                     <div class="analysis">${a.analysis}</div>
                 </div>
-            `).join('') : '<div class="card" style="text-align:center">뉴스 수집 중이거나 일시적 오류입니다.</div>'}
+            `).join('') : '<div class="card" style="text-align:center">AI 분석 중입니다...</div>'}
         </div>
     </body>
     </html>`;
 
     if (!fs.existsSync('public')) fs.mkdirSync('public');
     fs.writeFileSync('public/index.html', html);
-    console.log(`✅ 수집 완료! 총 ${articles.length}개의 최신 기사가 처리되었습니다.`);
+    console.log(`✅ 최종 완료! ${articles.length}개 처리.`);
 }
 
 main();
