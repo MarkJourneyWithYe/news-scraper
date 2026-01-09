@@ -4,11 +4,12 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+// 모델 명칭을 가장 기본값인 'gemini-pro'로 변경했습니다.
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
 async function main() {
-    console.log("🚀 수집 시작 및 AI 분석 대기 중...");
+    console.log("🚀 수집 시작 (모델: gemini-pro)...");
     const articles = [];
 
     try {
@@ -26,12 +27,12 @@ async function main() {
                 const title = titleMatch[1];
                 const link = linkMatch[1];
 
-                console.log(`📰 AI 분석 중: ${title}`);
+                console.log(`📰 AI 분석 시도: ${title}`);
 
                 try {
-                    const prompt = `당신은 헬스케어 전문가입니다. 다음 뉴스 제목을 보고 관련 건강 상식이나 시사점을 한국어 3줄로 설명하세요. (제목: ${title})`;
+                    // 프롬프트를 더 단순하게 만들었습니다.
+                    const prompt = `뉴스 제목을 보고 한국어 3줄 건강 정보를 작성하세요: ${title}`;
                     
-                    // ✅ 수정 포인트: AI가 대답을 마칠 때까지 확실히 기다립니다.
                     const result = await model.generateContent(prompt);
                     const aiResponse = await result.response;
                     const analysis = aiResponse.text();
@@ -56,7 +57,7 @@ async function main() {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body { font-family: sans-serif; padding: 20px; background: #f4f7f6; line-height: 1.6; }
+            body { font-family: sans-serif; padding: 20px; background: #f4f7f6; }
             .container { max-width: 600px; margin: 0 auto; }
             .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-left: 6px solid #2ecc71; }
             h2 { font-size: 1.1rem; margin-bottom: 10px; }
@@ -73,14 +74,14 @@ async function main() {
                     <h2><a href="${a.link}" target="_blank">${a.title}</a></h2>
                     <div class="analysis">${a.analysis}</div>
                 </div>
-            `).join('') : '<div class="card">기사를 분석하지 못했습니다. API 키와 로그를 다시 확인해 주세요.</div>'}
+            `).join('') : '<div class="card">기사 분석에 실패했습니다. GitHub Actions의 로그를 다시 확인해 주세요.</div>'}
         </div>
     </body>
     </html>`;
 
     if (!fs.existsSync('public')) fs.mkdirSync('public');
     fs.writeFileSync('public/index.html', html);
-    console.log(`✅ 최종 완료! 처리된 기사: ${articles.length}개`);
+    console.log(`✅ 작업 종료. 성공 개수: ${articles.length}`);
 }
 
 main();
