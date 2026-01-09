@@ -4,46 +4,51 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
-// AI 설정
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 async function main() {
-    console.log("🚀 RSS 피드 방식으로 전환하여 수집 시작...");
+    console.log("🚀 수집 시작 및 AI 분석 대기 중...");
     const articles = [];
 
     try {
-        // 코리아타임스 월드 뉴스 RSS (구조가 단순해서 차단이 없음)
         const rssUrl = "https://www.koreatimes.co.kr/www/rss/world.xml";
         const response = await axios.get(rssUrl, { timeout: 15000 });
         const xml = response.data;
 
-        // XML에서 제목과 링크 추출 (정규식 사용으로 라이브러리 의존 최소화)
         const items = xml.match(/<item>[\s\S]*?<\/item>/g).slice(0, 5);
 
         for (const item of items) {
-            const title = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/)[1];
-            const link = item.match(/<link>([\s\S]*?)<\/link>/)[1];
+            const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/);
+            const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
 
-            console.log(`📰 분석 중: ${title}`);
+            if (titleMatch && linkMatch) {
+                const title = titleMatch[1];
+                const link = linkMatch[1];
 
-            try {
-                // 본문 없이 제목만으로도 Gemini는 훌륭하게 배경지식을 동원해 분석합니다.
-                // 본문 크롤링 차단을 피하기 위해 제목 기반 분석으로 안전성을 높였습니다.
-                const prompt = `당신은 헬스케어 전문가입니다. 다음 뉴스 제목을 바탕으로 관련 건강 상식이나 시사점을 한국어 3줄로 설명해 주세요.\n뉴스 제목: ${title}`;
-                const result = await model.generateContent(prompt);
-                const analysis = result.response.text();
+                console.log(`📰 AI 분석 중: ${title}`);
 
-                articles.push({ title, link, analysis });
-            } catch (err) {
-                console.error("AI 분석 중 오류");
+                try {
+                    const prompt = `당신은 헬스케어 전문가입니다. 다음 뉴스 제목을 보고 관련 건강 상식이나 시사점을 한국어 3줄로 설명하세요. (제목: ${title})`;
+                    
+                    // ✅ 수정 포인트: AI가 대답을 마칠 때까지 확실히 기다립니다.
+                    const result = await model.generateContent(prompt);
+                    const aiResponse = await result.response;
+                    const analysis = aiResponse.text();
+
+                    if (analysis) {
+                        articles.push({ title, link, analysis });
+                        console.log("✅ 분석 성공");
+                    }
+                } catch (err) {
+                    console.error("❌ AI 분석 실패:", err.message);
+                }
             }
         }
     } catch (e) {
-        console.error("RSS 수집 실패:", e.message);
+        console.error("❌ 수집 실패:", e.message);
     }
 
-    // HTML 생성 (데이터가 없어도 왜 없는지 표시하게 수정)
     const html = `
     <!DOCTYPE html>
     <html lang="ko">
@@ -51,31 +56,31 @@ async function main() {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body { font-family: sans-serif; padding: 20px; background: #f4f7f6; }
+            body { font-family: sans-serif; padding: 20px; background: #f4f7f6; line-height: 1.6; }
             .container { max-width: 600px; margin: 0 auto; }
-            .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-left: 6px solid #e74c3c; }
-            h2 { font-size: 1.1rem; }
+            .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-left: 6px solid #2ecc71; }
+            h2 { font-size: 1.1rem; margin-bottom: 10px; }
             h2 a { color: #2980b9; text-decoration: none; }
-            .analysis { background: #f9f9f9; padding: 15px; border-radius: 8px; margin-top: 10px; font-size: 0.95rem; white-space: pre-wrap; }
+            .analysis { background: #f9f9f9; padding: 15px; border-radius: 8px; font-size: 0.95rem; white-space: pre-wrap; }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🏥 오늘의 AI 헬스 뉴스</h1>
-            <p style="text-align:center; color:gray">업데이트: ${new Date().toLocaleString('ko-KR')}</p>
+            <p style="text-align:center; color:gray">최종 업데이트: ${new Date().toLocaleString('ko-KR')}</p>
             ${articles.length > 0 ? articles.map(a => `
                 <div class="card">
                     <h2><a href="${a.link}" target="_blank">${a.title}</a></h2>
                     <div class="analysis">${a.analysis}</div>
                 </div>
-            `).join('') : '<div class="card">현재 수집된 뉴스가 없습니다. 잠시 후 GitHub Actions 로그를 확인해 주세요.</div>'}
+            `).join('') : '<div class="card">기사를 분석하지 못했습니다. API 키와 로그를 다시 확인해 주세요.</div>'}
         </div>
     </body>
     </html>`;
 
     if (!fs.existsSync('public')) fs.mkdirSync('public');
     fs.writeFileSync('public/index.html', html);
-    console.log(`✅ 완료! 총 ${articles.length}개의 기사를 처리했습니다.`);
+    console.log(`✅ 최종 완료! 처리된 기사: ${articles.length}개`);
 }
 
 main();
